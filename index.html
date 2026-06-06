@@ -507,6 +507,8 @@ details[open] summary{border-radius:var(--radius) var(--radius) 0 0;border-botto
 </div>
 
 <div class="page" id="page-setup">
+  <div class="card" id="intro-week-card"></div>
+
   <div class="card">
     <div class="clbl">Active Phase</div>
     <div class="phase-sel">
@@ -888,6 +890,11 @@ const DAYS = {
     label:'Conditioning', sub:'Wednesday · AKF Intervals', phase:3,
     type:'rower', keto:true, defaultRest:90,
   },
+  // Intro Week — find starting TMs without a spotter
+  'intro-sq':  { label:'Squat Test',   sub:'Intro Week', phase:0, type:'intro', lift:'sq',  primaryName:'Barbell Back Squat'       },
+  'intro-ohp': { label:'OHP Test',     sub:'Intro Week', phase:0, type:'intro', lift:'ohp', primaryName:'Barbell Standing OHP'     },
+  'intro-bp':  { label:'Bench Test',   sub:'Intro Week', phase:0, type:'intro', lift:'bp',  primaryName:'Barbell Bench Press'      },
+  'intro-dl':  { label:'Deadlift Test',sub:'Intro Week', phase:0, type:'intro', lift:'dl',  primaryName:'Conventional Deadlift'   },
 };
 
 const PHASE_DAYS = {
@@ -908,6 +915,7 @@ const DAY_DURATION = {
 let S = {
   phase: 1, week: 1, cycle: 1,
   tms: { sq: null, ohp: null, bp: null, dl: null },
+  introDone: [],
   phaseView: 1,
   startDate: null,
 };
@@ -1155,6 +1163,42 @@ function restoreSetupUI() {
   const inp = document.getElementById('start-date-input');
   if (inp && S.startDate) inp.value = S.startDate;
   showStartDateStatus();
+  renderIntroSetupCard();
+}
+function renderIntroSetupCard() {
+  const el = document.getElementById('intro-week-card');
+  if (!el) return;
+  const introOrder = [
+    { k:'sq',  id:'intro-sq',  label:'Squat'       },
+    { k:'ohp', id:'intro-ohp', label:'OHP'         },
+    { k:'bp',  id:'intro-bp',  label:'Bench Press' },
+    { k:'dl',  id:'intro-dl',  label:'Deadlift'    },
+  ];
+  const allDone = introOrder.every(x => !!S.tms[x.k]);
+  if (allDone) {
+    el.innerHTML = `<div class="clbl">Intro Week</div>
+      <div style="font-size:13px;color:var(--green);font-weight:700;margin-bottom:4px">All tests complete</div>
+      <div style="font-size:12px;color:var(--muted)">All four Training Maxes are set. You're ready to start Phase 1.</div>`;
+    return;
+  }
+  let rows = introOrder.map(({ k, id, label }) => {
+    const tm = S.tms[k];
+    const done = !!tm;
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--line-soft)">
+      <div>
+        <div style="font-size:13px;font-weight:700;color:${done ? 'var(--cream)' : 'var(--muted)'}">${label}</div>
+        ${done ? `<div style="font-size:11px;color:var(--green)">TM: ${tm} lbs</div>` : '<div style="font-size:11px;color:var(--dim)">Not tested</div>'}
+      </div>
+      <button class="btn btn-sec" style="width:auto;padding:8px 14px;margin:0;font-size:12px" onclick="openIntroFromSetup('${id}')">${done ? 'Re-test' : 'Start Test →'}</button>
+    </div>`;
+  }).join('');
+  el.innerHTML = `<div class="clbl">Intro Week — Find Your Training Maxes</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.6">No prior numbers? Run these 4 tests to find your starting Training Maxes safely — no spotter needed.</div>
+    ${rows}`;
+}
+function openIntroFromSetup(dayId) {
+  showPage('days');
+  openDayDetail(dayId);
 }
 function resetAll() {
   if (!confirm('Delete all saved data (TMs, settings, workout logs)?')) return;
@@ -1323,7 +1367,96 @@ function renderDay(dayId) {
   if (d.type === 'volume') {
     return renderChipDay(dayId, d, ac);
   }
+  // Intro Week
+  if (d.type === 'intro') {
+    return renderIntroDay(dayId, d);
+  }
   return '';
+}
+
+const INTRO_LIFT_NAMES = { sq:'Squat', ohp:'OHP', bp:'Bench Press', dl:'Deadlift' };
+
+function renderIntroDay(dayId, d) {
+  const liftLabel = INTRO_LIFT_NAMES[d.lift] || d.label;
+  const existing = S.tms[d.lift];
+  const doneNote = existing
+    ? `<div class="callout" style="margin-bottom:14px;background:rgba(95,138,82,.1);border-color:rgba(95,138,82,.3);color:#8ab87e">TM already set — ${existing} lbs. Log a new test below to update it.</div>`
+    : '';
+  return `
+    <div class="day-hdr">
+      <div><div class="day-sub">Intro Week</div><div class="day-title">${liftLabel}</div></div>
+    </div>
+    ${doneNote}
+    <div class="callout" style="margin-bottom:14px">
+      Work up to a weight you can lift for <strong>3–5 clean reps</strong> with full control — no grinding, no spotter needed. Log each set. The heaviest clean set becomes your Training Max automatically.
+    </div>
+    <div class="card">
+      <div class="clbl">Work-Up Sets — ${d.primaryName}</div>
+      ${_introSetRow(1)}
+      ${_introSetRow(2)}
+      ${_introSetRow(3)}
+    </div>
+    <button class="btn btn-acc" style="margin-top:16px" onclick="saveIntroSession('${dayId}')">Calculate & Set TM →</button>`;
+}
+
+function _introSetRow(n) {
+  return `<div class="set-form-row">
+    <div class="set-form-num">${n}</div>
+    <div class="set-form-name">${n === 1 ? 'First Set' : n === 2 ? 'Step Up' : 'Top Set'}</div>
+    <div class="set-form-inputs">
+      <div style="text-align:center">
+        <div style="font-size:9px;color:var(--muted);margin-bottom:2px">LBS</div>
+        <input type="number" inputmode="decimal" placeholder="0" id="intro_w_${n}" style="width:65px">
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:9px;color:var(--muted);margin-bottom:2px">REPS</div>
+        <input type="number" inputmode="decimal" placeholder="0" id="intro_r_${n}" style="width:65px">
+      </div>
+    </div>
+  </div>`;
+}
+
+async function saveIntroSession(dayId) {
+  const d = DAYS[dayId];
+  const lift = d.lift;
+  const sets = [];
+  for (let i = 1; i <= 3; i++) {
+    const w = parseFloat(document.getElementById(`intro_w_${i}`)?.value) || 0;
+    const r = parseInt(document.getElementById(`intro_r_${i}`)?.value) || 0;
+    if (w > 0 && r > 0) sets.push({ n: i, w, r });
+  }
+  if (!sets.length) { alert('Enter at least one set with weight and reps.'); return; }
+
+  // Prefer sets ≤ 5 reps (Epley most accurate); fall back to best available
+  const ranked = [...sets].sort((a, b) => epley(b.w, b.r) - epley(a.w, a.r));
+  const best = ranked.find(s => s.r <= 5) || ranked[0];
+  const orm = epley(best.w, best.r);
+  const tm = r5(orm * 0.9);
+
+  const workout = {
+    date: todayStr(), dayId, dayLabel: d.label,
+    phase: 0, week: 0, cycle: 0,
+    sets, notes: '',
+    introTest: { lift, orm, tm },
+  };
+
+  try {
+    await dbSave(workout);
+    S.tms[lift] = tm;
+    if (!S.introDone.includes(lift)) S.introDone.push(lift);
+    saveSettings();
+    showTMSaved(lift, tm);
+    renderIntroSetupCard();
+    closeDayDetail();
+    showPage('setup');
+    const toast = document.createElement('div');
+    toast.textContent = `${INTRO_LIFT_NAMES[lift]} TM set — ${tm} lbs`;
+    toast.style.cssText = 'position:fixed;bottom:100px;left:50%;transform:translateX(-50%);background:var(--amber);color:#0d0d0b;padding:10px 22px;border-radius:20px;font-weight:700;z-index:999;font-size:14px';
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 3000);
+  } catch(e) {
+    alert('Save failed. Open from the Vercel URL, not a local file.');
+  }
 }
 
 function renderStandardDay(dayId, d, ac) {
@@ -1607,7 +1740,35 @@ function renderDaysList() {
   const list = document.getElementById('days-list');
   const days = PHASE_DAYS[phaseView];
   const ac = accentColor(phaseView);
-  list.innerHTML = days.map(id => {
+  let html = '';
+
+  // Intro section — only when at least one TM is unset
+  const introOrder = [
+    { k:'sq',  id:'intro-sq'  },
+    { k:'ohp', id:'intro-ohp' },
+    { k:'bp',  id:'intro-bp'  },
+    { k:'dl',  id:'intro-dl'  },
+  ];
+  const needsIntro = introOrder.some(x => !S.tms[x.k]);
+  if (needsIntro) {
+    html += `<div style="font-size:10px;color:var(--amber-hot);font-weight:700;text-transform:uppercase;margin:0 0 10px">Intro Week</div>`;
+    introOrder.forEach(({ k, id }) => {
+      const done = !!S.tms[k];
+      html += `<div class="day-card" onclick="openDayDetail('${id}')">
+        <div class="dc-left">
+          <div class="dc-sub" style="color:${done ? 'var(--green)' : 'var(--muted)'}">${done ? 'Complete' : 'Pending'}</div>
+          <div class="dc-name">${INTRO_LIFT_NAMES[k]}</div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px">
+          ${done ? `<div style="font-size:11px;color:var(--green);font-weight:700">TM: ${S.tms[k]} lbs</div>` : ''}
+          <div class="dc-arr" style="color:${done ? 'var(--green)' : 'var(--amber)'}">›</div>
+        </div>
+      </div>`;
+    });
+    html += `<div style="height:1px;background:var(--line);margin:14px 0 16px"></div>`;
+  }
+
+  html += days.map(id => {
     const d = DAYS[id];
     const schedDay = Object.entries(SCHEDULE[phaseView]).find(([,v])=>v===id);
     const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -1620,6 +1781,8 @@ function renderDaysList() {
       <div class="dc-arr" style="color:${ac}">›</div>
     </div>`;
   }).join('');
+
+  list.innerHTML = html;
 }
 function openDayDetail(dayId) {
   document.getElementById('days-list').style.display = 'none';

@@ -1,4 +1,4 @@
-const CACHE = 'pig-iron-v24';
+const CACHE = 'pig-iron-v25';
 const ASSETS = ['/', '/index.html', '/manifest.json'];
 
 self.addEventListener('install', e => {
