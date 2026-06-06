@@ -436,6 +436,7 @@ details[open] summary{border-radius:var(--radius) var(--radius) 0 0;border-botto
     <div class="home-pr">
       <div class="home-pr-title">Training Max (TM)</div>
       <div class="home-pr-body">90% of your estimated 1RM. You never train your actual max. All weekly percentages (80/85/90%) are calculated off this number. Set it once in Setup — the app calculates every weight from there.</div>
+      <div style="margin-top:8px;font-size:12px">Don't know your max? <span onclick="showPage('setup')" style="color:var(--p3);font-weight:700;cursor:pointer;text-decoration:underline;text-underline-offset:2px">Start Here →</span></div>
     </div>
 
     <div class="home-pr">
@@ -507,7 +508,7 @@ details[open] summary{border-radius:var(--radius) var(--radius) 0 0;border-botto
 </div>
 
 <div class="page" id="page-setup">
-  <div class="card" id="intro-week-card"></div>
+  <div class="card" id="intro-week-card" style="border-left:3px solid var(--p3)"></div>
 
   <div class="card">
     <div class="clbl">Active Phase</div>
@@ -908,6 +909,19 @@ const DAY_DURATION = {
   d1:'~50 min', d3:'~50 min', d5:'~50 min', ruck:'~40 min', chips:'~45 min',
   squat3:'~40 min', ohp3:'~40 min', bench3:'~40 min', rower3:'~25 min',
 };
+
+// Pull full P1 session data into intro day entries so they render the complete workout
+{ const srcMap = { sq:'squat', ohp:'ohp', bp:'bench', dl:'deadlift' };
+  ['sq','ohp','bp','dl'].forEach(k => {
+    const src = DAYS[srcMap[k]];
+    const intro = DAYS['intro-'+k];
+    intro.supp        = src.supp;
+    intro.finisher    = src.finisher;
+    intro.extras      = src.extras || [];
+    intro.defaultRest = src.defaultRest;
+    intro.altNote     = src.altNote;
+  });
+}
 
 /* ═══════════════════════════════════════════════════
    STATE
@@ -1388,7 +1402,7 @@ function renderIntroDay(dayId, d) {
     </div>
     ${doneNote}
     <div class="callout" style="margin-bottom:14px">
-      Work up to a weight you can lift for <strong>3–5 clean reps</strong> with full control — no grinding, no spotter needed. Log each set. The heaviest clean set becomes your Training Max automatically.
+      Work up to a weight you can lift for <strong>3–5 clean reps</strong> with full control — no grinding, no spotter needed. Log each set below. The heaviest clean set becomes your Training Max automatically.
     </div>
     <div class="card">
       <div class="clbl">Work-Up Sets — ${d.primaryName}</div>
@@ -1396,7 +1410,12 @@ function renderIntroDay(dayId, d) {
       ${_introSetRow(2)}
       ${_introSetRow(3)}
     </div>
-    <button class="btn btn-acc" style="margin-top:16px" onclick="saveIntroSession('${dayId}')">Calculate & Set TM →</button>`;
+    <button class="btn btn-acc" style="margin-top:16px" onclick="saveIntroSession('${dayId}')">Calculate & Set TM →</button>
+    ${timerHTML(d.defaultRest || 180, [120,150,180,240], 'Take full rest between work-up sets — 3–5 min. This is heavy test work.')}
+    ${d.altNote ? `<details><summary>Equipment Substitutions</summary><div class="acc-body"><div class="ex-row"><div class="ex-det" style="color:var(--text)">${d.altNote}</div></div></div></details>` : ''}
+    ${d.supp ? suppHTML(d) : ''}
+    ${finisherHTML(d)}
+    ${d.extras && d.extras.includes('neck') ? neckHTML() : ''}`;
 }
 
 function _introSetRow(n) {
@@ -1740,35 +1759,7 @@ function renderDaysList() {
   const list = document.getElementById('days-list');
   const days = PHASE_DAYS[phaseView];
   const ac = accentColor(phaseView);
-  let html = '';
-
-  // Intro section — only when at least one TM is unset
-  const introOrder = [
-    { k:'sq',  id:'intro-sq'  },
-    { k:'ohp', id:'intro-ohp' },
-    { k:'bp',  id:'intro-bp'  },
-    { k:'dl',  id:'intro-dl'  },
-  ];
-  const needsIntro = introOrder.some(x => !S.tms[x.k]);
-  if (needsIntro) {
-    html += `<div style="font-size:10px;color:var(--amber-hot);font-weight:700;text-transform:uppercase;margin:0 0 10px">Intro Week</div>`;
-    introOrder.forEach(({ k, id }) => {
-      const done = !!S.tms[k];
-      html += `<div class="day-card" onclick="openDayDetail('${id}')">
-        <div class="dc-left">
-          <div class="dc-sub" style="color:${done ? 'var(--green)' : 'var(--muted)'}">${done ? 'Complete' : 'Pending'}</div>
-          <div class="dc-name">${INTRO_LIFT_NAMES[k]}</div>
-        </div>
-        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px">
-          ${done ? `<div style="font-size:11px;color:var(--green);font-weight:700">TM: ${S.tms[k]} lbs</div>` : ''}
-          <div class="dc-arr" style="color:${done ? 'var(--green)' : 'var(--amber)'}">›</div>
-        </div>
-      </div>`;
-    });
-    html += `<div style="height:1px;background:var(--line);margin:14px 0 16px"></div>`;
-  }
-
-  html += days.map(id => {
+  list.innerHTML = days.map(id => {
     const d = DAYS[id];
     const schedDay = Object.entries(SCHEDULE[phaseView]).find(([,v])=>v===id);
     const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -1781,8 +1772,6 @@ function renderDaysList() {
       <div class="dc-arr" style="color:${ac}">›</div>
     </div>`;
   }).join('');
-
-  list.innerHTML = html;
 }
 function openDayDetail(dayId) {
   document.getElementById('days-list').style.display = 'none';
