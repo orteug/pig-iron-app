@@ -142,6 +142,25 @@ body::before{
 .rp-sub{font-size:11px;color:var(--muted);margin-top:3px;line-height:1.4}
 .empty-msg{color:var(--muted);font-size:13px;padding:14px 10px}
 
+/* ── LOG TABLE (prescribed + inline logging columns) ── */
+.row.log{grid-template-columns:22px 38px 34px 34px 38px 34px 30px;gap:3px;padding:0 6px;font-size:10px}
+.row.log.head{font-size:8px;text-align:center}
+.row.log .rx{color:var(--muted);font-size:11px}
+.row-in{width:100%;background:#0c0c09;border:1px solid var(--line);border-radius:5px;color:var(--cream);
+        font-family:var(--mono);font-size:12px;font-weight:700;text-align:center;padding:6px 1px;
+        -webkit-appearance:none}
+.row-in:focus{outline:none;border-color:var(--amber)}
+.row.log .dash{color:var(--dim);font-size:11px}
+
+/* ── SUPPLEMENTAL LOGGING ─────────────────────────── */
+.supp-log-row{display:flex;gap:6px;align-items:center;margin-top:8px}
+.supp-alt-sel{flex:1;min-width:0;background:#0c0c09;border:1px solid var(--line);border-radius:6px;
+              color:var(--amber-hot);font-family:var(--mono);font-size:11px;font-weight:700;
+              padding:8px 6px;-webkit-appearance:none}
+.supp-log-name{flex:1;font-size:12px;color:var(--muted);font-weight:600}
+.supp-log-inputs{display:flex;gap:6px;flex-shrink:0}
+.supp-log-inputs .row-in{width:52px;padding:8px 2px}
+
 /* Contrast table (Phase 2) */
 .ctbl{width:100%;border-collapse:collapse}
 .ctbl th{font-size:10px;color:var(--muted);text-align:left;padding:0 6px 10px;font-weight:700;text-transform:uppercase}
@@ -1017,6 +1036,7 @@ function ensureRun() {
 }
 
 let timer = { id:null, dur:180, rem:null, running:false, dayId:null, endAt:null };
+let activeDayId = null; // day currently open in day-detail, used by inline log inputs
 let swReg = null;
 let activeLogDay = null;
 let selectedRpe = null;
@@ -1565,19 +1585,96 @@ function logBtnHTML(dayId) {
   return `<button class="btn btn-log" style="margin-top:16px" onclick="openLogSheet('${dayId}')">End Session — Save Log →</button>`;
 }
 
+/* ── Supplemental / Finisher / Save — inline logging (standard days) ── */
+function suppLogHTML(d, last) {
+  const lastSupp = last ? (last.supp || []) : [];
+  const rows = d.supp.map((s, idx) => {
+    const altBtn = s.alts ? `<button class="alt-toggle" onclick="toggleAlts(this)">↕ sub</button>` : '';
+    const altRows = s.alts ? `<div class="alts-list">${s.alts.map(a =>
+      `<div class="alt-item"><div class="alt-name">${a.name}</div><div class="alt-det">${a.detail}</div></div>`
+    ).join('')}</div>` : '';
+
+    const prevEntry = lastSupp.find(x => x.name === s.name || x.altOf === s.name);
+    let prevAltIdx = -1;
+    if (s.alts && prevEntry && prevEntry.altOf === s.name) {
+      prevAltIdx = s.alts.findIndex(a => a.name === prevEntry.name);
+    }
+    selectedAlts[idx] = prevAltIdx >= 0 ? prevAltIdx : null;
+
+    const selectorHTML = s.alts
+      ? `<select class="supp-alt-sel" id="supp_sel_${idx}" onchange="onSuppAltChange(${idx}, this.value)">
+          <option value="-1"${prevAltIdx<0?' selected':''}>${s.name}</option>
+          ${s.alts.map((a,ai)=>`<option value="${ai}"${ai===prevAltIdx?' selected':''}>${a.name}</option>`).join('')}
+        </select>`
+      : `<div class="supp-log-name">${s.name}</div>`;
+
+    return `<div class="ex-row">
+      <div class="ex-hdr"><div class="ex-name">${s.name}</div>${altBtn}</div>
+      <div class="ex-det" id="suppdet_${idx}">${s.detail}</div>${altRows}
+      <div class="supp-log-row">
+        ${selectorHTML}
+        <div class="supp-log-inputs">
+          <input type="number" inputmode="decimal" class="row-in" placeholder="LBS" value="${prevEntry?prevEntry.w||'':''}" id="lf_s_w_${idx}">
+          <input type="number" inputmode="decimal" class="row-in" placeholder="REPS" value="${prevEntry?prevEntry.r||'':''}" id="lf_s_r_${idx}">
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+  return `<details><summary>Supplementary Work</summary><div class="acc-body">${rows}</div></details>`;
+}
+function onSuppAltChange(idx, val) {
+  const d = DAYS[activeDayId];
+  const s = d.supp[idx];
+  const altIdx = val === '-1' ? null : parseInt(val);
+  selectedAlts[idx] = altIdx;
+  const detailEl = document.getElementById('suppdet_'+idx);
+  if (detailEl) detailEl.textContent = altIdx === null ? s.detail : s.alts[altIdx].detail;
+}
+
+function finisherLogHTML(d, last) {
+  if (!d.finisher) return '';
+  const prevFinisher = last ? (last.finisher || {}) : {};
+  finisherDone = prevFinisher.done !== undefined ? prevFinisher.done : null;
+  return `<details><summary>Finisher — ${d.finisher.name}</summary>
+  <div class="acc-body">
+    <div class="ex-row"><div class="ex-det">${d.finisher.detail}</div></div>
+    <div class="set-form-row">
+      <div class="set-form-name" style="font-size:12px;flex:1">Completed?</div>
+      <div style="display:flex;gap:8px;flex-shrink:0">
+        <div class="eq-btn${finisherDone===true?' on':''}" id="fin-yes" onclick="setFinisher(true)" style="padding:8px 14px;font-size:12px">Yes</div>
+        <div class="eq-btn${finisherDone===false?' on':''}" id="fin-no" onclick="setFinisher(false)" style="padding:8px 14px;font-size:12px">No</div>
+      </div>
+    </div>
+    <input type="text" id="lf_finisher_note" value="${prevFinisher.note||''}" placeholder="Reps hit, how it felt…" style="width:100%;background:#0c0c09;border:1px solid var(--line);border-radius:6px;padding:10px 12px;color:var(--cream);font-size:14px;font-family:var(--mono);margin-top:6px">
+  </div></details>`;
+}
+
+function saveBarHTML(dayId) {
+  if (DEMO) return `<div class="card"><div style="font-size:13px;color:var(--muted);text-align:center">Logging disabled in demo</div></div>`;
+  return `<div class="card">
+    <div class="clbl">Notes</div>
+    <textarea class="log-notes" id="lf_notes" placeholder="Form cues, PRs, how the weight felt…"></textarea>
+  </div>
+  <button class="btn btn-log" style="margin-top:4px" onclick="saveStandardSession('${dayId}')">End Session — Save Log →</button>`;
+}
+
 /* ═══════════════════════════════════════════════════
    RENDER DAY CONTENT
 ═══════════════════════════════════════════════════ */
-function renderDay(dayId) {
+async function renderDay(dayId) {
   timer = { id:null, dur:180, rem:null, running:false, endAt:null };
+  activeDayId = dayId;
+  selectedAlts = {};
+  finisherDone = null;
   const d = DAYS[dayId];
   if (!d) return '<p>Day not found.</p>';
   const phase = d.phase;
   const ac = accentColor(phase);
 
-  // Standard barbell days (P1 + P3 keto)
+  // Standard barbell days (P1 + P3 keto) — inputs render inline, prefilled from last session
   if (d.primary) {
-    return renderStandardDay(dayId, d, ac);
+    const last = await dbGetLast(dayId, phase);
+    return renderStandardDay(dayId, d, ac, last);
   }
   // Rower
   if (d.type === 'rower') {
@@ -1698,7 +1795,7 @@ async function saveIntroSession(dayId) {
   }
 }
 
-function renderStandardDay(dayId, d, ac) {
+function renderStandardDay(dayId, d, ac, last) {
   const phase = d.phase;
   const tm = S.tms[d.primary];
   const week = S.week;
@@ -1706,59 +1803,50 @@ function renderStandardDay(dayId, d, ac) {
   const isDeload = week === 4;
 
   const restLabel = isKeto ? '1:30–3:00' : isDeload ? '2:00–3:00' : d.primary === 'dl' ? '4:00' : '3:00';
+  const numSets = (isKeto || isDeload) ? 3 : 6;
+  const rpeRowIndex = numSets; // last row — rest-pause set for normal weeks, final straight set for keto/deload
+  const lastSets = last ? (last.sets || []) : [];
 
   let pctStr = '';
-  let setsHTML = '';
   let heroLoad = '';
 
-  const headRow = `<div class="row head"><span>Set</span><span>Load</span><span>Reps</span><span>Rest</span></div>`;
+  const headRow = `<div class="row log head"><span>SET</span><span class="rx">RX LD</span><span class="rx">RX RP</span><span class="rx">REST</span><span>LD</span><span>RP</span><span>RPE</span></div>`;
   const pad = n => String(n).padStart(2, '0');
 
-  if (!tm) {
-    pctStr = isKeto ? '70% TM · Straight Sets · No Rest-Pause' : pctLabel(week);
-    const pctNum = isKeto ? '70%' : `${Math.round(pct(week)*100)}%`;
-    const loadCell = `<span style="font-size:12px;color:var(--muted)">${pctNum} TM</span>`;
-    heroLoad = `<div class="lift-load" style="font-size:28px">${pctNum}<span>TM</span></div>`;
-    if (isKeto || isDeload) {
-      for (let i = 1; i <= 3; i++) {
-        setsHTML += `<div class="row"><span class="set-num">${pad(i)}</span>${loadCell}<span class="set-reps">5</span><span style="font-size:11px;color:var(--muted)">${restLabel}</span></div>`;
-      }
-    } else {
-      const repsTarget = week === 3 ? '2–3' : '3';
-      for (let i = 1; i <= 5; i++) {
-        setsHTML += `<div class="row"><span class="set-num">${pad(i)}</span>${loadCell}<span class="set-reps">${repsTarget}</span><span style="font-size:11px;color:var(--muted)">${restLabel}</span></div>`;
-      }
-      setsHTML += `<div class="row rp">
-        <span class="set-num" style="color:${ac}">06</span>
-        ${loadCell}
-        <span class="set-reps">AMRAP</span>
-        <span style="font-size:11px;color:var(--muted)">20–30s</span>
-      </div>`;
-    }
-    setsHTML += `<div class="row" style="grid-template-columns:1fr;min-height:34px;color:var(--muted);font-size:11px">Set Training Max in Setup to see exact weights</div>`;
-  } else {
-    const pctVal = isKeto ? 0.70 : pct(week);
-    const wt = r5(tm * pctVal);
-    pctStr = isKeto ? '70% TM · Straight Sets · No Rest-Pause' : pctLabel(week);
-    heroLoad = `<div class="lift-load">${wt}<span>lbs</span></div>`;
+  const pctVal = isKeto ? 0.70 : pct(week);
+  const wt = tm ? r5(tm * pctVal) : null;
+  pctStr = isKeto ? '70% TM · Straight Sets · No Rest-Pause' : pctLabel(week);
+  const pctNum = isKeto ? '70%' : `${Math.round(pct(week)*100)}%`;
+  heroLoad = wt ? `<div class="lift-load">${wt}<span>lbs</span></div>` : `<div class="lift-load" style="font-size:28px">${pctNum}<span>TM</span></div>`;
 
-    if (isKeto || isDeload) {
-      for (let i = 1; i <= 3; i++) {
-        setsHTML += `<div class="row"><span class="set-num">${pad(i)}</span><span style="font-size:13px;font-weight:600;color:var(--cream)">${wt}</span><span class="set-reps">5</span><span style="font-size:11px;color:var(--muted)">${restLabel}</span></div>`;
-      }
-    } else {
-      const repsTarget = week === 3 ? '2–3' : '3';
-      for (let i = 1; i <= 5; i++) {
-        setsHTML += `<div class="row"><span class="set-num">${pad(i)}</span><span style="font-size:13px;font-weight:600;color:var(--cream)">${wt}</span><span class="set-reps">${repsTarget}</span><span style="font-size:11px;color:var(--muted)">${restLabel}</span></div>`;
-      }
-      setsHTML += `<div class="row rp">
-        <span class="set-num" style="color:${ac}">06</span>
-        <span style="font-size:13px;font-weight:600;color:var(--cream)">${wt}</span>
-        <span class="set-reps">AMRAP</span>
-        <span style="font-size:11px;color:var(--muted)">20–30s</span>
-      </div>`;
-    }
+  function logRow(i, isRP) {
+    const rxLoad = wt ? wt : `${pctNum} TM`;
+    const rxReps = isRP ? 'AMRAP' : (isKeto || isDeload) ? '5' : (week === 3 ? '2–3' : '3');
+    const ls = lastSets.find(s => s.n === i);
+    const preWt = ls ? ls.w : (wt || '');
+    const preReps = ls ? ls.r : (isRP ? '' : (isKeto || isDeload) ? '5' : (week === 3 ? '2' : '3'));
+    const repsInput = isRP
+      ? `<input type="text" inputmode="text" class="row-in" value="${preReps||''}" placeholder="5+3+2" id="lf_r_${i}">`
+      : `<input type="number" inputmode="decimal" class="row-in" value="${preReps||''}" placeholder="0" id="lf_r_${i}">`;
+    const rpeCell = i === rpeRowIndex
+      ? `<input type="number" inputmode="numeric" class="row-in" min="1" max="10" placeholder="—" value="${ls&&ls.rpe?ls.rpe:''}" id="lf_primary_rpe">`
+      : `<span class="dash">—</span>`;
+    return `<div class="row log${isRP?' rp':''}">
+      <span class="set-num">${isRP?'RP':pad(i)}</span>
+      <span class="rx">${rxLoad}</span>
+      <span class="rx">${rxReps}</span>
+      <span class="rx">${restLabel}</span>
+      <input type="number" inputmode="decimal" class="row-in" value="${preWt||''}" placeholder="0" id="lf_w_${i}">
+      ${repsInput}
+      ${rpeCell}
+    </div>`;
   }
+
+  let setsHTML = '';
+  for (let i = 1; i <= numSets; i++) {
+    setsHTML += logRow(i, i === rpeRowIndex && !isKeto && !isDeload);
+  }
+  const tmNote = !tm ? `<div class="row" style="grid-template-columns:1fr;min-height:30px;color:var(--muted);font-size:11px">Set Training Max in Setup to see exact weights</div>` : '';
 
   const deloadBanner = (isDeload && !isKeto) ? `<div class="deload-banner">DELOAD — straight sets, no rest-pause, form focus</div>` : '';
   const dlWarn = d.dlWarning ? `<div class="callout" style="margin-top:10px">DL rest-pause: touch-and-go for the burst, dead-stop reset for each mini-set. If grip/back feel compromised at 90%, cap at 3 reps.</div>` : '';
@@ -1779,6 +1867,19 @@ function renderStandardDay(dayId, d, ac) {
 
   const liftSub = isKeto ? '3 sets · 70% TM · Straight sets' : isDeload ? 'Deload — 3 sets · Form focus' : '5 sets · Rest-pause set 6';
 
+  // Equipment — prefilled from last session, drives the eq-unit-note under it
+  const eq = (last && last.equipment) || 'barbell';
+  selectedEquipment = eq;
+  const eqNote = eq === 'dumbbell' ? 'Per hand — log each dumbbell weight individually'
+    : eq === 'smith' ? 'Smith Machine — bar ≈ 35 lbs, include in logged weight' : '';
+  const eqHTML = `<div class="clbl" style="margin-bottom:6px">Equipment</div>
+    <div class="eq-sel">
+      <div class="eq-btn${eq==='barbell'?' on':''}" onclick="setEquipment(this,'barbell')">Barbell</div>
+      <div class="eq-btn${eq==='dumbbell'?' on':''}" onclick="setEquipment(this,'dumbbell')">Dumbbell</div>
+      <div class="eq-btn${eq==='smith'?' on':''}" onclick="setEquipment(this,'smith')">Smith</div>
+    </div>
+    <div id="eq-unit-note" style="font-size:11px;color:var(--muted);margin-bottom:2px;min-height:14px">${eqNote}</div>`;
+
   return `<div class="day-hdr">
     <div><div class="day-sub">${d.sub}</div><div class="day-title">${d.label}</div></div>
     <div class="day-pct" id="dpct">${pctStr}</div>
@@ -1792,15 +1893,16 @@ function renderStandardDay(dayId, d, ac) {
     ${heroLoad}
   </section>
   <div class="card">
+    ${eqHTML}
     <div class="clbl">Working Sets — ${d.primaryName}</div>
-    <section class="set-table">${headRow}${setsHTML}</section>${dlWarn}
+    <section class="set-table">${headRow}${setsHTML}</section>${tmNote}${dlWarn}
   </div>
   ${timerHTML(defaultRest, presets, restNote)}
   ${d.altNote ? `<details><summary>Equipment Substitutions</summary><div class="acc-body"><div class="ex-row"><div class="ex-det" style="color:var(--text)">${d.altNote}</div></div></div></details>` : ''}
-  ${d.supp ? suppHTML(d) : ''}
-  ${finisherHTML(d)}
+  ${d.supp ? suppLogHTML(d, last) : ''}
+  ${finisherLogHTML(d, last)}
   ${d.extras.includes('neck') ? neckHTML() : ''}
-  ${logBtnHTML(dayId)}`;
+  ${saveBarHTML(dayId)}`;
 }
 
 function renderRowerDay(dayId, d, ac) {
@@ -1993,12 +2095,12 @@ function renderDaysList() {
     </div>`;
   }).join('');
 }
-function openDayDetail(dayId) {
+async function openDayDetail(dayId) {
   document.getElementById('days-list').style.display = 'none';
   document.getElementById('phase-btns').style.display = 'none';
   const detail = document.getElementById('day-detail');
   detail.style.display = 'block';
-  document.getElementById('day-detail-content').innerHTML = renderDay(dayId);
+  document.getElementById('day-detail-content').innerHTML = await renderDay(dayId);
   window.scrollTo(0,0);
 }
 function closeDayDetail() {
@@ -2080,7 +2182,7 @@ function transitionPhase(to) {
 /* ═══════════════════════════════════════════════════
    TODAY TAB
 ═══════════════════════════════════════════════════ */
-function renderToday() {
+async function renderToday() {
   const now = new Date();
   const dow = now.getDay();
   const dateStr = now.toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric'});
@@ -2121,6 +2223,7 @@ function renderToday() {
   } else {
     const d = DAYS[dayId];
     const dur = DAY_DURATION[dayId] || '';
+    const dayHTML = await renderDay(dayId);
     el.innerHTML = `${dateHeader}${completionBanner}<div style="background:var(--card);border:1px solid var(--border);border-left:3px solid ${ac};border-radius:14px;padding:14px 16px;margin-bottom:16px">
       <div style="font-size:11px;color:var(--muted);text-transform:uppercase;font-weight:700;margin-bottom:6px">Today's Workout</div>
       <div style="font-size:26px;font-weight:800;margin-bottom:6px">${d.label}</div>
@@ -2129,7 +2232,7 @@ function renderToday() {
         ${dur ? `<span style="color:var(--border)">·</span><span style="color:${ac};font-weight:700">${dur}</span>` : ''}
       </div>
     </div>
-    ${renderDay(dayId)}`;
+    ${dayHTML}`;
   }
 }
 
@@ -2181,17 +2284,6 @@ function setSprintMethod(el, val) {
   el.closest('.sprint-sel').querySelectorAll('.eq-btn').forEach(b => b.classList.remove('on'));
   el.classList.add('on');
 }
-function selectSuppAlt(suppIdx, altIdx) {
-  selectedAlts[suppIdx] = altIdx; // null = main, 0/1/2 = alt index
-  const block = document.getElementById('suppblock_' + suppIdx);
-  block.querySelectorAll('.salt-btn').forEach(b => b.classList.remove('on'));
-  const selId = altIdx === null ? 'salt_' + suppIdx + '_main' : 'salt_' + suppIdx + '_' + altIdx;
-  document.getElementById(selId).classList.add('on');
-  block.querySelectorAll('.supp-fields').forEach(f => f.style.display = 'none');
-  const fieldsId = altIdx === null ? 'supp_fields_' + suppIdx + '_m' : 'supp_fields_' + suppIdx + '_a' + altIdx;
-  document.getElementById(fieldsId).style.display = 'block';
-}
-
 function buildLogForm(dayId, d, last) {
   const today = todayStr();
   const prevLine = last
@@ -2201,10 +2293,7 @@ function buildLogForm(dayId, d, last) {
   let body = `<div style="font-size:12px;color:var(--muted);font-weight:700;margin-bottom:6px">${today}</div>
   ${prevLine}`;
 
-  if (d.primary) {
-    body += buildPrimaryLogSection(d, last);
-    if (d.supp && d.supp.length) body += buildSuppLogSection(d, last);
-  } else if (d.type === 'contrast' || d.type === 'contrast2') {
+  if (d.type === 'contrast' || d.type === 'contrast2') {
     body += buildContrastLogSection(d, last);
   } else if (d.type === 'rower') {
     body += buildRowerLogSection(d, last);
@@ -2226,123 +2315,6 @@ function buildLogForm(dayId, d, last) {
   <button class="btn btn-log" onclick="saveSession()">Save Session</button>`;
 
   return body;
-}
-
-function _setRow(num, name, preWt, preReps, isRP) {
-  const wl = isRP ? 'RP' : num;
-  const wInput = `<input type="number" inputmode="decimal" value="${preWt||''}" placeholder="0" id="lf_w_${num}" style="width:65px">`;
-  const rInput = isRP
-    ? `<input type="text" inputmode="text" value="${preReps||''}" placeholder="5+3+2" id="lf_r_${num}" style="width:82px">`
-    : `<input type="number" inputmode="decimal" value="${preReps||''}" placeholder="0" id="lf_r_${num}" style="width:65px">`;
-  return `<div class="set-form-row">
-    <div class="set-form-num">${wl}</div>
-    <div class="set-form-name">${isRP ? 'Rest-Pause' : name}</div>
-    <div class="set-form-inputs">
-      <div style="text-align:center">
-        <div class="wt-unit-lbl" style="font-size:9px;color:var(--muted);margin-bottom:2px">${selectedEquipment==='dumbbell'?'LBS/HAND':'LBS'}</div>
-        ${wInput}
-      </div>
-      <div style="text-align:center">
-        <div style="font-size:9px;color:var(--muted);margin-bottom:2px">REPS</div>
-        ${rInput}
-      </div>
-    </div>
-  </div>`;
-}
-
-function buildPrimaryLogSection(d, last) {
-  const eq = selectedEquipment;
-  const noteText = eq === 'dumbbell'
-    ? 'Per hand — log each dumbbell weight individually'
-    : eq === 'smith' ? 'Smith Machine — bar ≈ 35 lbs, include in logged weight' : '';
-  const isKeto = d.keto, isDeload = !isKeto && S.week === 4;
-  const numSets = isKeto ? 3 : isDeload ? 3 : 6;
-  const calcWt = S.tms[d.primary] ? r5(S.tms[d.primary] * (isKeto ? 0.70 : pct(S.week))) : '';
-  const lastSets = last ? (last.sets || []) : [];
-
-  let html = `<div class="clbl" style="margin-bottom:6px">Equipment</div>
-  <div class="eq-sel">
-    <div class="eq-btn${eq==='barbell'?' on':''}" onclick="setEquipment(this,'barbell')">Barbell</div>
-    <div class="eq-btn${eq==='dumbbell'?' on':''}" onclick="setEquipment(this,'dumbbell')">Dumbbell</div>
-    <div class="eq-btn${eq==='smith'?' on':''}" onclick="setEquipment(this,'smith')">Smith</div>
-  </div>
-  <div id="eq-unit-note" style="font-size:11px;color:var(--muted);margin-bottom:10px;min-height:14px">${noteText}</div>
-  <div class="clbl">Working Sets — ${d.primaryName}</div>`;
-
-  for (let i = 1; i <= numSets; i++) {
-    const ls = lastSets.find(s => s.n === i);
-    const preWt = ls ? ls.w : calcWt;
-    const preReps = ls ? ls.r : (i === 6 ? '' : S.week === 3 ? '2' : '3');
-    const isRP = i === 6 && !isKeto && !isDeload;
-    html += _setRow(i, d.primaryName, preWt, preReps, isRP);
-  }
-  return html;
-}
-
-function _suppInputRow(name, wId, rId, prevW, prevR) {
-  return `<div class="set-form-row">
-    <div class="set-form-name" style="font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:4px">${name}</div>
-    <div class="set-form-inputs" style="flex-shrink:0">
-      <div style="text-align:center">
-        <div style="font-size:9px;color:var(--muted);margin-bottom:2px">LBS</div>
-        <input type="number" inputmode="decimal" value="${prevW||''}" placeholder="0" id="${wId}" style="width:65px">
-      </div>
-      <div style="text-align:center">
-        <div style="font-size:9px;color:var(--muted);margin-bottom:2px">REPS</div>
-        <input type="number" inputmode="decimal" value="${prevR||''}" placeholder="0" id="${rId}" style="width:65px">
-      </div>
-    </div>
-  </div>`;
-}
-
-function buildSuppLogSection(d, last) {
-  const lastSupp = last ? (last.supp || []) : [];
-  let html = `<div class="supp-hdr">Supplemental Work — Best Set Each</div>`;
-
-  d.supp.forEach((s, idx) => {
-    const hasAlts = s.alts && s.alts.length;
-    const prevMain = lastSupp.find(x => x.name === s.name) || {};
-
-    if (!hasAlts) {
-      html += _suppInputRow(s.name, `lf_s_w_${idx}`, `lf_s_r_${idx}`, prevMain.w, prevMain.r);
-    } else {
-      // Alt selector tabs
-      const altTabs = `<div class="eq-sel" style="flex-wrap:wrap;gap:4px;margin-bottom:6px">
-        <div class="eq-btn salt-btn on" id="salt_${idx}_main" onclick="selectSuppAlt(${idx},null)" style="font-size:10px;padding:6px 8px">${s.name}</div>
-        ${s.alts.map((a, ai) => `<div class="eq-btn salt-btn" id="salt_${idx}_${ai}" onclick="selectSuppAlt(${idx},${ai})" style="font-size:10px;padding:6px 8px">${a.name}</div>`).join('')}
-      </div>`;
-      // Main fields (visible by default)
-      const mainFields = `<div id="supp_fields_${idx}_m" class="supp-fields">
-        ${_suppInputRow(s.name, `lf_s_w_${idx}`, `lf_s_r_${idx}`, prevMain.w, prevMain.r)}
-      </div>`;
-      // Alt fields (hidden by default)
-      const altFields = s.alts.map((a, ai) => {
-        const prevAlt = lastSupp.find(x => x.name === a.name) || {};
-        return `<div id="supp_fields_${idx}_a${ai}" class="supp-fields" style="display:none">
-          ${_suppInputRow(a.name, `lf_s_w_${idx}_a${ai}`, `lf_s_r_${idx}_a${ai}`, prevAlt.w, prevAlt.r)}
-        </div>`;
-      }).join('');
-      html += `<div id="suppblock_${idx}">${altTabs}${mainFields}${altFields}</div>`;
-    }
-  });
-
-  // Finisher section
-  if (d.finisher) {
-    const prevFinisher = last ? (last.finisher || {}) : {};
-    html += `<div class="supp-hdr" style="margin-top:14px">Finisher</div>
-    <div style="font-size:13px;font-weight:700;margin-bottom:4px;font-family:var(--sans);text-transform:uppercase">${d.finisher.name}</div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.5">${d.finisher.detail}</div>
-    <div class="set-form-row">
-      <div class="set-form-name" style="font-size:12px;flex:1">Completed?</div>
-      <div style="display:flex;gap:8px;flex-shrink:0">
-        <div class="eq-btn${prevFinisher.done?'':''}" id="fin-yes" onclick="setFinisher(true)" style="padding:8px 14px;font-size:12px">Yes</div>
-        <div class="eq-btn" id="fin-no" onclick="setFinisher(false)" style="padding:8px 14px;font-size:12px">No</div>
-      </div>
-    </div>
-    <input type="text" id="lf_finisher_note" value="${prevFinisher.note||''}" placeholder="Reps hit, how it felt…" style="width:100%;background:#0c0c09;border:1px solid var(--line);border-radius:6px;padding:10px 12px;color:var(--cream);font-size:14px;font-family:var(--mono);margin-top:6px">`;
-  }
-
-  return html;
 }
 
 let finisherDone = null;
@@ -2534,12 +2506,75 @@ async function saveSession() {
   }
 }
 
+async function saveStandardSession(dayId) {
+  const d = DAYS[dayId];
+  const isKeto = d.keto, isDeload = !isKeto && S.week === 4;
+  const numSets = (isKeto || isDeload) ? 3 : 6;
+
+  const sets = [];
+  for (let i = 1; i <= numSets; i++) {
+    const wEl = document.getElementById('lf_w_'+i);
+    const rEl = document.getElementById('lf_r_'+i);
+    sets.push({ n:i, w: parseFloat(wEl?.value)||0, r: rEl?.value||'' });
+  }
+  const primaryRpeEl = document.getElementById('lf_primary_rpe');
+  const primaryRpe = primaryRpeEl?.value ? Math.min(10, Math.max(1, parseInt(primaryRpeEl.value))) : null;
+  if (sets.length) sets[sets.length-1].rpe = primaryRpe;
+
+  const supp = (d.supp || []).map((s, idx) => {
+    const altIdx = selectedAlts[idx];
+    const isAlt = altIdx !== null && altIdx !== undefined && s.alts && s.alts[altIdx];
+    const exerciseName = isAlt ? s.alts[altIdx].name : s.name;
+    return {
+      name: exerciseName,
+      altOf: isAlt ? s.name : undefined,
+      w: parseFloat(document.getElementById(`lf_s_w_${idx}`)?.value) || 0,
+      r: document.getElementById(`lf_s_r_${idx}`)?.value || '',
+    };
+  }).filter(s => s.w || s.r);
+
+  const finisherNote = document.getElementById('lf_finisher_note')?.value || '';
+  const finisher = d.finisher && (finisherDone !== null || finisherNote)
+    ? { name: d.finisher.name, done: finisherDone, note: finisherNote }
+    : undefined;
+
+  const workout = {
+    id: crypto.randomUUID(),
+    date: todayStr(), dayId, dayLabel: d.label,
+    phase: S.phase, week: S.week, cycle: S.cycle,
+    runId: S.runId, runNumber: S.runNumber,
+    equipment: selectedEquipment,
+    sets, supp, finisher,
+    notes: document.getElementById('lf_notes')?.value || '',
+    rpe: primaryRpe,
+  };
+
+  try {
+    await dbSave(workout);
+    const toast = document.createElement('div');
+    toast.textContent = '✓ Session saved';
+    toast.style.cssText = 'position:fixed;bottom:100px;left:50%;transform:translateX(-50%);background:var(--green);color:#000;padding:10px 20px;border-radius:20px;font-weight:700;z-index:999;font-size:14px';
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 2000);
+  } catch(e) {
+    alert('Save failed. Open from the Vercel URL, not a local file.');
+  }
+}
+
 /* ═══════════════════════════════════════════════════
    LOG TAB
 ═══════════════════════════════════════════════════ */
 function buildLogEntry(w) {
-  const rpeClass = {easy:'rpe-easy',right:'rpe-right',hard:'rpe-hard'}[w.rpe] || 'rpe-right';
-  const rpeLabel = {easy:'Easy',right:'Right',hard:'Hard'}[w.rpe] || w.rpe;
+  // rpe is a 1-10 number for standard-day logs (per-lift, rest-pause set);
+  // older logs stored it as an 'easy'|'right'|'hard' whole-session string.
+  let rpeClass = null, rpeLabel = null;
+  if (typeof w.rpe === 'number') {
+    rpeClass = w.rpe <= 6 ? 'rpe-easy' : w.rpe <= 8 ? 'rpe-right' : 'rpe-hard';
+    rpeLabel = 'RPE ' + w.rpe;
+  } else if (w.rpe) {
+    rpeClass = {easy:'rpe-easy',right:'rpe-right',hard:'rpe-hard'}[w.rpe] || 'rpe-right';
+    rpeLabel = {easy:'Easy',right:'Right',hard:'Hard'}[w.rpe] || w.rpe;
+  }
   const primarySets = (w.sets||[]).filter(s=>s.w>0);
   const eqTag = w.equipment && w.equipment !== 'barbell' ? ` · ${w.equipment}` : '';
 
@@ -2577,7 +2612,7 @@ function buildLogEntry(w) {
   return `<details class="log-item">
     <summary>
       <div class="log-date">${w.date} · W${w.week}</div>
-      <div class="log-title">${w.dayLabel}<span class="log-rpe ${rpeClass}">${rpeLabel}</span></div>
+      <div class="log-title">${w.dayLabel}${rpeLabel ? `<span class="log-rpe ${rpeClass}">${rpeLabel}</span>` : ''}</div>
       <div class="log-meta">${summary}</div>
     </summary>
     ${hasDetail ? `<div class="log-sets">
