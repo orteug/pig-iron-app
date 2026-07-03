@@ -747,14 +747,17 @@ function getUID() {
 const UID = !DEMO ? getUID() : 'demo';
 
 async function sbSaveWorkout(w) {
-  if (!sb) return;
-  try { await sb.from('workouts').insert({ user_id: UID, date: w.date, data: w }); } catch(e) {}
+  if (!sb) return true;
+  try {
+    const { error } = await sb.from('workouts').upsert({ id: w.id, user_id: UID, date: w.date, data: w }, { onConflict: 'id' });
+    return !error;
+  } catch(e) { return false; }
 }
 async function sbGetAllWorkouts() {
   if (!sb) return [];
   try {
-    const { data } = await sb.from('workouts').select('*').eq('user_id', UID).order('date', { ascending: true });
-    return (data || []).map(r => ({ ...r.data, _sbId: r.id }));
+    const { data } = await sb.from('workouts').select('data').eq('user_id', UID).order('date', { ascending: true });
+    return (data || []).map(r => r.data);
   } catch(e) { return []; }
 }
 async function sbDeleteAllWorkouts() {
@@ -776,11 +779,13 @@ async function sbLoadSettings() {
 }
 async function sbPullWorkoutsToIDB() {
   const remote = await sbGetAllWorkouts();
+  const existingIds = new Set((await dbGetAll()).map(w => w.id));
+  let added = 0;
   for (const w of remote) {
-    const { _sbId, ...workout } = w;
-    try { await _idbAdd(workout); } catch(e) {}
+    if (existingIds.has(w.id)) continue;
+    try { await _idbPut(w); added++; } catch(e) {}
   }
-  return remote.length;
+  return added;
 }
 
 /* ═══════════════════════════════════════════════════
@@ -1001,7 +1006,15 @@ let S = {
   introDone: [],
   phaseView: 1,
   startDate: null,
+  runId: null, runNumber: 1, runStartedAt: null,
+  runHistory: [], // closed-out runs: {runNumber, runId, startedAt, endedAt, finalTMs}
 };
+function ensureRun() {
+  if (!S.runId) {
+    S.runId = crypto.randomUUID();
+    S.runStartedAt = todayStr();
+  }
+}
 
 let timer = { id:null, dur:180, rem:null, running:false, dayId:null, endAt:null };
 let swReg = null;
@@ -1031,6 +1044,9 @@ function openDB() {
     req.onupgradeneeded = e => {
       const d = e.target.result;
       if (!d.objectStoreNames.contains('workouts')) {
+        // keyPath 'id' accepts either legacy autoincrement ints or the
+        // client-generated UUID strings now used for idempotent cloud sync —
+        // IndexedDB allows mixed key types in the same out-of-line-key store.
         const st = d.createObjectStore('workouts', {keyPath:'id', autoIncrement:true});
         st.createIndex('date','date'); st.createIndex('dayType','dayType');
       }
@@ -1039,20 +1055,30 @@ function openDB() {
     req.onerror = () => rej(req.error);
   });
 }
-async function _idbAdd(w) {
+async function _idbPut(w) {
   if (!db) return;
   return new Promise((res,rej) => {
     const tx = db.transaction('workouts','readwrite');
-    const req = tx.objectStore('workouts').add(w);
+    const req = tx.objectStore('workouts').put(w);
     req.onsuccess = () => res(req.result);
     req.onerror = () => rej(req.error);
   });
 }
 async function dbSave(w) {
-  await _idbAdd(w);
-  sbSaveWorkout(w); // fire and forget — cloud backup
+  w.pendingSync = true;
+  await _idbPut(w);
+  const ok = await sbSaveWorkout(w);
+  if (ok) { w.pendingSync = false; await _idbPut(w); }
 }
-async function dbSaveLocal(w) { return _idbAdd(w); }
+async function retryPendingSync() {
+  if (!sb) return;
+  const all = await dbGetAll();
+  const pending = all.filter(w => w.pendingSync);
+  for (const w of pending) {
+    const ok = await sbSaveWorkout(w);
+    if (ok) { w.pendingSync = false; await _idbPut(w); }
+  }
+}
 async function dbGetAll() {
   if (!db) return [];
   return new Promise((res,rej) => {
@@ -1298,10 +1324,18 @@ function resetAll() {
   dbClear().then(() => location.reload());
 }
 function restartProgram() {
-  if (!confirm('Restart the program?\n\nYour Training Maxes are kept. Phase, week, cycle, start date, and workout log will be reset to zero.')) return;
+  if (!confirm('Restart the program?\n\nYour Training Maxes are kept. Phase, week, and cycle reset to the start. Past workout logs are kept and archived under this run for later comparison — nothing is deleted.')) return;
+  S.runHistory.push({
+    runNumber: S.runNumber, runId: S.runId,
+    startedAt: S.runStartedAt, endedAt: todayStr(),
+    finalTMs: { ...S.tms },
+  });
+  S.runNumber += 1;
+  S.runId = crypto.randomUUID();
+  S.runStartedAt = todayStr();
   S.phase = 1; S.week = 1; S.cycle = 1; S.startDate = null; S.introDone = [];
   saveSettings();
-  dbClear().then(() => location.reload());
+  location.reload();
 }
 
 /* ── Sync Code (cloud restore) ─────────────────── */
@@ -1337,12 +1371,18 @@ async function restoreFromCode() {
       localStorage.setItem('pi_uid', code);
       localStorage.setItem('pi_s', JSON.stringify(S));
     }
-    const { data: wd } = await sb.from('workouts').select('*').eq('user_id', code).order('date', { ascending: true });
+    const { data: wd } = await sb.from('workouts').select('data').eq('user_id', code).order('date', { ascending: true });
     if (wd?.length) {
-      await dbClear();
-      // Don't trigger sbDeleteAllWorkouts on the new UID, just clear IDB
-      for (const row of (wd || [])) {
-        try { await _idbAdd(row.data); } catch(e) {}
+      // Local-only wipe — must NOT touch Supabase, which is still keyed to
+      // the OLD UID at this point in the session (UID is a const, doesn't
+      // change until reload). Calling dbClear() here would delete the old
+      // account's cloud logs instead of just clearing the local cache.
+      await new Promise((res) => {
+        const tx = db.transaction('workouts','readwrite');
+        tx.objectStore('workouts').clear().onsuccess = res;
+      });
+      for (const row of wd) {
+        try { await _idbPut(row.data); } catch(e) {}
       }
     }
     location.reload();
@@ -1455,6 +1495,7 @@ function onVisibilityChange() {
     if (swReg) swReg.update();
     cancelTimerNotification();
     syncTimerFromTimestamp();
+    retryPendingSync();
   }
 }
 function timerHTML(defaultSecs, presetList, note) {
@@ -1630,8 +1671,10 @@ async function saveIntroSession(dayId) {
   const tm = r5(orm * 0.9);
 
   const workout = {
+    id: crypto.randomUUID(),
     date: todayStr(), dayId, dayLabel: d.label,
     phase: 0, week: 0, cycle: 0,
+    runId: S.runId, runNumber: S.runNumber,
     sets, notes: '',
     introTest: { lift, orm, tm },
   };
@@ -2467,8 +2510,10 @@ async function saveSession() {
   });
 
   const workout = {
+    id: crypto.randomUUID(),
     date: todayStr(), dayId: activeLogDay, dayLabel: d.label,
     phase: S.phase, week: S.week, cycle: S.cycle,
+    runId: S.runId, runNumber: S.runNumber,
     equipment: selectedEquipment,
     sprintMethod: (d.type === 'contrast' || d.type === 'contrast2') ? selectedSprintMethod : undefined,
     sets, supp, conditioning, finisher,
@@ -2554,46 +2599,83 @@ async function renderLog() {
     return;
   }
 
-  // Group: phase → cycle
-  const phaseMap = {};
-  workouts.forEach(w => {
-    const pk = w.phase || 1;
-    const ck = w.cycle || 1;
-    if (!phaseMap[pk]) phaseMap[pk] = {};
-    if (!phaseMap[pk][ck]) phaseMap[pk][ck] = [];
-    phaseMap[pk][ck].push(w);
-  });
-
   const phaseNames = {1:'Foundation', 2:'Speed Strong', 3:'AKF Fat Loss'};
   const phaseAccents = {1:'var(--p1)', 2:'var(--p2)', 3:'var(--p3)'};
-  const phases = Object.keys(phaseMap).map(Number).sort((a,b) => b-a);
 
-  list.innerHTML = phases.map((phase, pi) => {
-    const cycles = Object.keys(phaseMap[phase]).map(Number).sort((a,b) => b-a);
-    const total = cycles.reduce((s,c) => s + phaseMap[phase][c].length, 0);
-    const phaseOpen = pi === 0;
+  // Group: run → phase → cycle. Legacy logs saved before run-tagging fall under Run 1.
+  const runMap = {};
+  workouts.forEach(w => {
+    const rn = w.runNumber || 1;
+    if (!runMap[rn]) runMap[rn] = {};
+    const pk = w.phase || 1;
+    const ck = w.cycle || 1;
+    if (!runMap[rn][pk]) runMap[rn][pk] = {};
+    if (!runMap[rn][pk][ck]) runMap[rn][pk][ck] = [];
+    runMap[rn][pk][ck].push(w);
+  });
 
-    const cyclesHTML = cycles.map((cycle, ci) => {
-      const sessions = phaseMap[phase][cycle];
-      const cycleOpen = phaseOpen && ci === 0;
-      const cycleLabel = phase === 2
-        ? `Block ${cycle} · ${sessions.length} session${sessions.length!==1?'s':''}`
-        : `Cycle ${cycle} · ${sessions.length} session${sessions.length!==1?'s':''}`;
-      return `<details class="log-cycle-grp" ${cycleOpen?'open':''}>
-        <summary class="log-cycle-hdr"><span>${cycleLabel}</span><span>${cycleOpen?'▾':'▸'}</span></summary>
-        ${sessions.map(buildLogEntry).join('')}
+  const runNumbers = Object.keys(runMap).map(Number).sort((a,b) => b-a);
+  const showRuns = runNumbers.length > 1 || S.runNumber > 1;
+  const closedRunByNumber = {};
+  (S.runHistory || []).forEach(r => { closedRunByNumber[r.runNumber] = r; });
+
+  function renderPhaseGroups(phaseMap, defaultOpen) {
+    const phases = Object.keys(phaseMap).map(Number).sort((a,b) => b-a);
+    return phases.map((phase, pi) => {
+      const cycles = Object.keys(phaseMap[phase]).map(Number).sort((a,b) => b-a);
+      const total = cycles.reduce((s,c) => s + phaseMap[phase][c].length, 0);
+      const phaseOpen = defaultOpen && pi === 0;
+
+      const cyclesHTML = cycles.map((cycle, ci) => {
+        const sessions = phaseMap[phase][cycle];
+        const cycleOpen = phaseOpen && ci === 0;
+        const cycleLabel = phase === 2
+          ? `Block ${cycle} · ${sessions.length} session${sessions.length!==1?'s':''}`
+          : `Cycle ${cycle} · ${sessions.length} session${sessions.length!==1?'s':''}`;
+        return `<details class="log-cycle-grp" ${cycleOpen?'open':''}>
+          <summary class="log-cycle-hdr"><span>${cycleLabel}</span><span>${cycleOpen?'▾':'▸'}</span></summary>
+          ${sessions.map(buildLogEntry).join('')}
+        </details>`;
+      }).join('');
+
+      return `<details class="log-phase-grp" ${phaseOpen?'open':''}>
+        <summary class="log-phase-hdr" style="border-left-color:${phaseAccents[phase]}">
+          <div>
+            <div style="font-size:11px;color:var(--muted);text-transform:uppercase;font-weight:700">Phase ${phase}</div>
+            <div style="font-size:18px;font-weight:800">${phaseNames[phase]||'Phase '+phase}</div>
+          </div>
+          <div style="text-align:right;font-size:12px;color:var(--muted)">${total} session${total!==1?'s':''}</div>
+        </summary>
+        ${cyclesHTML}
       </details>`;
     }).join('');
+  }
 
-    return `<details class="log-phase-grp" ${phaseOpen?'open':''}>
-      <summary class="log-phase-hdr" style="border-left-color:${phaseAccents[phase]}">
+  if (!showRuns) {
+    list.innerHTML = renderPhaseGroups(runMap[runNumbers[0]], true);
+    return;
+  }
+
+  list.innerHTML = runNumbers.map((rn, ri) => {
+    const phaseMap = runMap[rn];
+    const total = Object.values(phaseMap).reduce((s,cm) => s + Object.values(cm).reduce((s2,arr) => s2+arr.length, 0), 0);
+    const runOpen = ri === 0;
+    const closed = closedRunByNumber[rn];
+    const isActive = rn === S.runNumber;
+    const subLabel = isActive
+      ? `Current run${S.runStartedAt ? ' · started ' + S.runStartedAt : ''}`
+      : closed
+        ? `${closed.startedAt || '—'} → ${closed.endedAt}`
+        : '';
+    return `<details class="log-phase-grp" ${runOpen?'open':''} style="border-left:3px solid var(--amber)">
+      <summary class="log-phase-hdr" style="border-left-color:var(--amber)">
         <div>
-          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;font-weight:700">Phase ${phase}</div>
-          <div style="font-size:18px;font-weight:800">${phaseNames[phase]||'Phase '+phase}</div>
+          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;font-weight:700">Run ${rn}${isActive?' · Active':''}</div>
+          <div style="font-size:18px;font-weight:800">${subLabel}</div>
         </div>
         <div style="text-align:right;font-size:12px;color:var(--muted)">${total} session${total!==1?'s':''}</div>
       </summary>
-      ${cyclesHTML}
+      <div style="padding-left:2px">${renderPhaseGroups(phaseMap, runOpen)}</div>
     </details>`;
   }).join('');
 }
@@ -2702,6 +2784,7 @@ function showStartDateStatus() {
 ═══════════════════════════════════════════════════ */
 async function init() {
   loadSettings();
+  ensureRun();
   if (S.startDate) calcFromStartDate();
   restoreSetupUI();
   updateBadge();
@@ -2716,6 +2799,7 @@ async function init() {
       const remoteSettings = await sbLoadSettings();
       if (remoteSettings) {
         S = { ...S, ...remoteSettings };
+        ensureRun();
         if (S.startDate) calcFromStartDate();
         localStorage.setItem('pi_s', JSON.stringify(S));
         restoreSetupUI();
@@ -2723,6 +2807,8 @@ async function init() {
       }
       const pulled = await sbPullWorkoutsToIDB();
       if (pulled) console.log(`Restored ${pulled} sessions from cloud`);
+    } else {
+      retryPendingSync();
     }
   } catch(e) { console.warn('IndexedDB unavailable:', e); }
 
