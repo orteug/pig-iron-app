@@ -144,13 +144,14 @@ body::before{
 
 /* ── LOG TABLE (prescribed + inline logging columns) ── */
 .row.log{grid-template-columns:20px 1fr 1fr 1fr 1fr 1fr 1fr;gap:5px;padding:0 6px;font-size:10px}
-.row.log.head{font-size:8px;text-align:center}
 .row.log .rx{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 .row-in{width:100%;background:#0c0c09;border:1px solid var(--line);border-radius:6px;color:var(--cream);
         font-family:var(--mono);font-size:14px;font-weight:700;text-align:center;padding:8px 2px;
         -webkit-appearance:none}
 .row-in:focus{outline:none;border-color:var(--amber)}
 .row.log .dash{color:var(--dim);font-size:11px}
+/* declared after .rx so header cells always win, even if a cell is (mis)tagged .rx */
+.row.log.head, .row.log.head span{font-size:8px;font-weight:400;text-align:center;color:var(--dim);overflow:visible;white-space:normal}
 
 /* ── SUPPLEMENTAL LOGGING ─────────────────────────── */
 .supp-log-row{display:flex;gap:6px;align-items:center;margin-top:8px}
@@ -1810,7 +1811,7 @@ function renderStandardDay(dayId, d, ac, last) {
   let pctStr = '';
   let heroLoad = '';
 
-  const headRow = `<div class="row log head"><span>SET</span><span class="rx">RX LD</span><span class="rx">RX RP</span><span class="rx">REST</span><span>LD</span><span>RP</span><span>RPE</span></div>`;
+  const headRow = `<div class="row log head"><span>SET</span><span>RX LD</span><span>RX RP</span><span>REST</span><span>LD</span><span>RP</span><span>RPE</span></div>`;
   const pad = n => String(n).padStart(2, '0');
 
   const pctVal = isKeto ? 0.70 : pct(week);
