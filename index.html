@@ -368,6 +368,7 @@ details[open] summary{border-radius:var(--radius) var(--radius) 0 0;border-botto
 #today-content .rest-day h2{font-size:22px;font-weight:800;margin-bottom:8px}
 #today-content .rest-day p{color:var(--muted);font-size:15px;line-height:1.5}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.50.0/dist/umd/supabase.min.js" integrity="sha384-jP+y6mxch/vbLrNpx4basfv6ciZQuHwdRHgZGa6Mhja0Xm4p87ok2OQavTrRIGxH" crossorigin="anonymous"></script>
 </head>
 <body>
 
@@ -641,6 +642,23 @@ details[open] summary{border-radius:var(--radius) var(--radius) 0 0;border-botto
     <div class="stepper-row"><span style="font-size:14px;font-weight:600">Bench</span><span id="tm_bp_disp" style="font-size:18px;font-weight:800;color:var(--muted)">—</span></div>
     <div class="stepper-row" style="border-bottom:none"><span style="font-size:14px;font-weight:600">Deadlift</span><span id="tm_dl_disp" style="font-size:18px;font-weight:800;color:var(--muted)">—</span></div>
   </div>
+  <div class="card" style="margin-top:4px">
+    <div class="clbl">Cloud Sync</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.5">Workouts sync automatically. Save this code to restore your data on a new device.</div>
+    <div id="sync-code-display" style="font-family:var(--mono);font-size:12px;color:var(--amber-hot);background:#0c0c09;border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:10px;word-break:break-all;letter-spacing:.03em"></div>
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <button class="btn btn-sec btn-sm" onclick="copySyncCode()">Copy Code</button>
+      <button class="btn btn-sec btn-sm" onclick="showRestoreInput()">Restore from Code</button>
+    </div>
+    <div id="restore-input-wrap" style="display:none">
+      <div class="ig" style="margin-bottom:8px">
+        <label>Sync Code</label>
+        <input type="text" id="restore-code-input" placeholder="Paste your sync code here" style="font-size:13px;padding:12px">
+      </div>
+      <button class="btn btn-acc" onclick="restoreFromCode()">Pull Data from Cloud →</button>
+    </div>
+  </div>
+  <button class="btn btn-sec" style="color:var(--amber-hot);border-color:var(--amber)" onclick="restartProgram()">Restart Program</button>
   <button class="btn btn-ghost" onclick="resetAll()">Reset All Data</button>
   <div style="height:8px"></div>
 </div>
@@ -713,6 +731,57 @@ details[open] summary{border-radius:var(--radius) var(--radius) 0 0;border-botto
 <script>
 'use strict';
 const DEMO = !!window.PIG_IRON_DEMO;
+
+/* ═══════════════════════════════════════════════════
+   SUPABASE — cloud sync
+═══════════════════════════════════════════════════ */
+const SB_URL = 'https://deqeackdkwizukhgexen.supabase.co';
+const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRlcWVhY2tka3dpenVraGdleGVuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODMwNzI4NjksImV4cCI6MjA5ODY0ODg2OX0.hsToA6oOZeEep_XAdAfdqq9ONBuZgJCBAJ49JzwDMpM';
+const sb = !DEMO && window.supabase ? window.supabase.createClient(SB_URL, SB_KEY) : null;
+
+function getUID() {
+  let uid = localStorage.getItem('pi_uid');
+  if (!uid) { uid = crypto.randomUUID(); localStorage.setItem('pi_uid', uid); }
+  return uid;
+}
+const UID = !DEMO ? getUID() : 'demo';
+
+async function sbSaveWorkout(w) {
+  if (!sb) return;
+  try { await sb.from('workouts').insert({ user_id: UID, date: w.date, data: w }); } catch(e) {}
+}
+async function sbGetAllWorkouts() {
+  if (!sb) return [];
+  try {
+    const { data } = await sb.from('workouts').select('*').eq('user_id', UID).order('date', { ascending: true });
+    return (data || []).map(r => ({ ...r.data, _sbId: r.id }));
+  } catch(e) { return []; }
+}
+async function sbDeleteAllWorkouts() {
+  if (!sb) return;
+  try { await sb.from('workouts').delete().eq('user_id', UID); } catch(e) {}
+}
+async function sbSaveSettings(s) {
+  if (!sb) return;
+  try {
+    await sb.from('settings').upsert({ user_id: UID, data: s, updated_at: new Date().toISOString() });
+  } catch(e) {}
+}
+async function sbLoadSettings() {
+  if (!sb) return null;
+  try {
+    const { data } = await sb.from('settings').select('data').eq('user_id', UID).maybeSingle();
+    return data ? data.data : null;
+  } catch(e) { return null; }
+}
+async function sbPullWorkoutsToIDB() {
+  const remote = await sbGetAllWorkouts();
+  for (const w of remote) {
+    const { _sbId, ...workout } = w;
+    try { await _idbAdd(workout); } catch(e) {}
+  }
+  return remote.length;
+}
 
 /* ═══════════════════════════════════════════════════
    WORKOUT DATA
@@ -934,7 +1003,8 @@ let S = {
   startDate: null,
 };
 
-let timer = { id:null, dur:180, rem:null, running:false, dayId:null };
+let timer = { id:null, dur:180, rem:null, running:false, dayId:null, endAt:null };
+let swReg = null;
 let activeLogDay = null;
 let selectedRpe = null;
 
@@ -944,6 +1014,7 @@ let selectedRpe = null;
 function saveSettings() {
   if (DEMO) return;
   localStorage.setItem('pi_s', JSON.stringify(S));
+  sbSaveSettings(S);
 }
 function loadSettings() {
   const d = localStorage.getItem('pi_s');
@@ -968,7 +1039,7 @@ function openDB() {
     req.onerror = () => rej(req.error);
   });
 }
-async function dbSave(w) {
+async function _idbAdd(w) {
   if (!db) return;
   return new Promise((res,rej) => {
     const tx = db.transaction('workouts','readwrite');
@@ -977,6 +1048,11 @@ async function dbSave(w) {
     req.onerror = () => rej(req.error);
   });
 }
+async function dbSave(w) {
+  await _idbAdd(w);
+  sbSaveWorkout(w); // fire and forget — cloud backup
+}
+async function dbSaveLocal(w) { return _idbAdd(w); }
 async function dbGetAll() {
   if (!db) return [];
   return new Promise((res,rej) => {
@@ -992,10 +1068,11 @@ async function dbGetLast(dayId, phase) {
 }
 async function dbClear() {
   if (!db) return;
-  return new Promise((res,rej) => {
+  await new Promise((res,rej) => {
     const tx = db.transaction('workouts','readwrite');
     tx.objectStore('workouts').clear().onsuccess = res;
   });
+  sbDeleteAllWorkouts();
 }
 
 /* ═══════════════════════════════════════════════════
@@ -1178,6 +1255,7 @@ function restoreSetupUI() {
   if (inp && S.startDate) inp.value = S.startDate;
   showStartDateStatus();
   renderIntroSetupCard();
+  initSyncCodeUI();
 }
 function renderIntroSetupCard() {
   const el = document.getElementById('intro-week-card');
@@ -1219,6 +1297,59 @@ function resetAll() {
   localStorage.removeItem('pi_s');
   dbClear().then(() => location.reload());
 }
+function restartProgram() {
+  if (!confirm('Restart the program?\n\nYour Training Maxes are kept. Phase, week, cycle, start date, and workout log will be reset to zero.')) return;
+  S.phase = 1; S.week = 1; S.cycle = 1; S.startDate = null; S.introDone = [];
+  saveSettings();
+  dbClear().then(() => location.reload());
+}
+
+/* ── Sync Code (cloud restore) ─────────────────── */
+function initSyncCodeUI() {
+  const el = document.getElementById('sync-code-display');
+  if (el) el.textContent = UID;
+}
+function copySyncCode() {
+  navigator.clipboard?.writeText(UID).then(() => {
+    const el = document.getElementById('sync-code-display');
+    if (!el) return;
+    const orig = el.textContent;
+    el.textContent = 'Copied!';
+    setTimeout(() => { el.textContent = orig; }, 1500);
+  });
+}
+function showRestoreInput() {
+  const el = document.getElementById('restore-input-wrap');
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+async function restoreFromCode() {
+  const code = document.getElementById('restore-code-input')?.value?.trim();
+  if (!code || !code.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+    alert('Enter a valid 36-character sync code.');
+    return;
+  }
+  if (!confirm('This will replace your current data with the cloud data for that code. Continue?')) return;
+  if (!sb) { alert('Cloud sync unavailable.'); return; }
+  try {
+    const { data: sd } = await sb.from('settings').select('data').eq('user_id', code).maybeSingle();
+    if (sd?.data) {
+      S = { ...S, ...sd.data };
+      localStorage.setItem('pi_uid', code);
+      localStorage.setItem('pi_s', JSON.stringify(S));
+    }
+    const { data: wd } = await sb.from('workouts').select('*').eq('user_id', code).order('date', { ascending: true });
+    if (wd?.length) {
+      await dbClear();
+      // Don't trigger sbDeleteAllWorkouts on the new UID, just clear IDB
+      for (const row of (wd || [])) {
+        try { await _idbAdd(row.data); } catch(e) {}
+      }
+    }
+    location.reload();
+  } catch(e) {
+    alert('Restore failed. Check the sync code and try again.');
+  }
+}
 
 /* ═══════════════════════════════════════════════════
    TIMER
@@ -1243,12 +1374,18 @@ function startTimer() {
   const btn = document.getElementById('t-start');
   if (timer.running) {
     clearInterval(timer.id); timer.running = false;
+    timer.endAt = null;
     if (btn) btn.textContent = 'Resume';
     return;
   }
   if (timer.rem === null) timer.rem = timer.dur;
   timer.running = true;
+  timer.endAt = Date.now() + timer.rem * 1000;
   if (btn) btn.textContent = 'Pause';
+  // Ask for notification permission on first timer start
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
   const dial = document.getElementById('t-dial');
   timer.id = setInterval(() => {
     timer.rem--;
@@ -1258,27 +1395,67 @@ function startTimer() {
     updateDial(timer.rem, timer.dur);
     if (timer.rem <= 0) {
       clearInterval(timer.id); timer.running = false;
-      if (el) { el.textContent = 'GO!'; el.className = 'timer-num done'; }
-      if (dial) { dial.classList.remove('run'); dial.style.setProperty('--dial-deg','0deg'); }
-      if (btn) btn.textContent = 'Start';
-      beep();
-      if (navigator.vibrate) navigator.vibrate([300,100,300]);
-      setTimeout(() => {
-        timer.rem = null;
-        if (el) { el.textContent = fmt(timer.dur); el.className = 'timer-num'; }
-        updateDial(timer.dur, timer.dur);
-      }, 2500);
+      timer.endAt = null;
+      timerDone();
     }
   }, 1000);
 }
+function timerDone() {
+  const el = document.getElementById('t-num');
+  const btn = document.getElementById('t-start');
+  const dial = document.getElementById('t-dial');
+  beep();
+  if (navigator.vibrate) navigator.vibrate([300,100,300]);
+  if (el) { el.textContent = 'GO!'; el.className = 'timer-num done'; }
+  if (dial) { dial.classList.remove('run'); dial.style.setProperty('--dial-deg','0deg'); }
+  if (btn) btn.textContent = 'Start';
+  setTimeout(() => {
+    timer.rem = null;
+    if (el) { el.textContent = fmt(timer.dur); el.className = 'timer-num'; }
+    updateDial(timer.dur, timer.dur);
+  }, 2500);
+}
 function resetTimer() {
-  clearInterval(timer.id); timer.running = false; timer.rem = null;
+  clearInterval(timer.id); timer.running = false; timer.rem = null; timer.endAt = null;
   const el = document.getElementById('t-num'), btn = document.getElementById('t-start');
   const dial = document.getElementById('t-dial');
   if (el) { el.textContent = fmt(timer.dur); el.className = 'timer-num'; }
   if (dial) dial.classList.remove('run');
   if (btn) btn.textContent = 'Start';
   updateDial(timer.dur, timer.dur);
+  cancelTimerNotification();
+}
+function syncTimerFromTimestamp() {
+  if (!timer.endAt) return;
+  const rem = Math.ceil((timer.endAt - Date.now()) / 1000);
+  if (rem <= 0) {
+    clearInterval(timer.id);
+    timer.running = false;
+    timer.endAt = null;
+    timerDone();
+  } else if (timer.running) {
+    timer.rem = rem; // interval will pick this up on next tick
+  }
+}
+function scheduleTimerNotification(delayMs) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const sw = navigator.serviceWorker?.controller;
+  if (sw) sw.postMessage({ type: 'TIMER_SCHEDULE', delayMs: Math.max(0, delayMs) });
+}
+function cancelTimerNotification() {
+  const sw = navigator.serviceWorker?.controller;
+  if (sw) sw.postMessage({ type: 'TIMER_CANCEL' });
+}
+function onVisibilityChange() {
+  if (document.visibilityState === 'hidden') {
+    if (timer.running && timer.endAt) {
+      scheduleTimerNotification(timer.endAt - Date.now());
+    }
+  } else {
+    if (swReg) swReg.update();
+    cancelTimerNotification();
+    syncTimerFromTimestamp();
+  }
 }
 function timerHTML(defaultSecs, presetList, note) {
   const presetsHTML = presetList.map(s =>
@@ -1351,7 +1528,7 @@ function logBtnHTML(dayId) {
    RENDER DAY CONTENT
 ═══════════════════════════════════════════════════ */
 function renderDay(dayId) {
-  timer = { id:null, dur:180, rem:null, running:false };
+  timer = { id:null, dur:180, rem:null, running:false, endAt:null };
   const d = DAYS[dayId];
   if (!d) return '<p>Day not found.</p>';
   const phase = d.phase;
@@ -2531,23 +2708,34 @@ async function init() {
   document.documentElement.style.setProperty('--accent', accentColor(S.phase));
   setPhaseView(S.phase);
 
-  try { await openDB(); } catch(e) { console.warn('IndexedDB unavailable:', e); }
+  try {
+    await openDB();
+    const local = await dbGetAll();
+    if (!local.length) {
+      // IDB empty — try restoring from Supabase (handles cleared browser storage)
+      const remoteSettings = await sbLoadSettings();
+      if (remoteSettings) {
+        S = { ...S, ...remoteSettings };
+        if (S.startDate) calcFromStartDate();
+        localStorage.setItem('pi_s', JSON.stringify(S));
+        restoreSetupUI();
+        updateBadge();
+      }
+      const pulled = await sbPullWorkoutsToIDB();
+      if (pulled) console.log(`Restored ${pulled} sessions from cloud`);
+    }
+  } catch(e) { console.warn('IndexedDB unavailable:', e); }
 
   showHome();
 
-  // Service worker
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').then(reg => {
-      // When a new SW takes control, reload to get fresh HTML
-      navigator.serviceWorker.addEventListener('controllerchange', () => {
-        window.location.reload();
-      });
-      // Force SW update check every time app comes to foreground
-      document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') reg.update();
-      });
+      swReg = reg;
+      navigator.serviceWorker.addEventListener('controllerchange', () => location.reload());
     }).catch(() => {});
   }
+
+  document.addEventListener('visibilitychange', onVisibilityChange);
 }
 
 init();
