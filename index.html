@@ -143,11 +143,11 @@ body::before{
 .empty-msg{color:var(--muted);font-size:13px;padding:14px 10px}
 
 /* ── LOG TABLE (prescribed + inline logging columns) ── */
-.row.log{grid-template-columns:22px 38px 34px 34px 38px 34px 30px;gap:3px;padding:0 6px;font-size:10px}
+.row.log{grid-template-columns:20px 1fr 1fr 1fr 1fr 1fr 1fr;gap:5px;padding:0 6px;font-size:10px}
 .row.log.head{font-size:8px;text-align:center}
-.row.log .rx{color:var(--muted);font-size:11px}
-.row-in{width:100%;background:#0c0c09;border:1px solid var(--line);border-radius:5px;color:var(--cream);
-        font-family:var(--mono);font-size:12px;font-weight:700;text-align:center;padding:6px 1px;
+.row.log .rx{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.row-in{width:100%;background:#0c0c09;border:1px solid var(--line);border-radius:6px;color:var(--cream);
+        font-family:var(--mono);font-size:14px;font-weight:700;text-align:center;padding:8px 2px;
         -webkit-appearance:none}
 .row-in:focus{outline:none;border-color:var(--amber)}
 .row.log .dash{color:var(--dim);font-size:11px}
